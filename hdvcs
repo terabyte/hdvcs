@@ -19,7 +19,7 @@ use Config::Simple;
 use Data::Dumper;
 use File::Find;
 
-my $CONFIG_FILE = "publish.cfg";
+my $CONFIG_FILE = "hdvcs.conf";
 my $HOSTNAME = `hostname`;
 chomp $HOSTNAME;
 my $HEADHASH = (split(/ /, `git log -1 --oneline`))[0];
