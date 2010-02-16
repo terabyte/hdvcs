@@ -25,7 +25,9 @@ chomp $HOSTNAME;
 my $HEADHASH = (split(/ /, `git log -1 --oneline`))[0];
 MAIN: {
 
-    my $config = readConfig($CONFIG_FILE);
+    my $configFile = $ENV{'HDCVS_CONFIG_FILE'};
+    $configFile ||= $CONFIG_FILE;
+    my $config = readConfig($configFile);
 #    print "Read config: " . Data::Dumper::Dumper($config) . "\n";
 
     my $deployedHash = readDeployedHash($config);
