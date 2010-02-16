@@ -1,0 +1,265 @@
+#!/usr/bin/perl
+# vi: ft=perl
+#
+# This code is copyright 2010 Carl Myers
+#
+# License to use and distribute this code is granted under the terms of the Perl
+# Artistic License v2.0.
+# For the complete text of this license, see:
+# http://www.perlfoundation.org/artistic_license_2_0
+#
+
+use strict;
+use warnings;
+
+use File::Basename;
+use File::Copy;
+use File::Path qw(make_path);
+use Config::Simple;
+use Data::Dumper;
+use File::Find;
+
+my $CONFIG_FILE = "publish.cfg";
+my $HOSTNAME = `hostname`;
+chomp $HOSTNAME;
+my $HEADHASH = (split(/ /, `git log -1 --oneline`))[0];
+MAIN: {
+
+    my $config = readConfig($CONFIG_FILE);
+#    print "Read config: " . Data::Dumper::Dumper($config) . "\n";
+
+    my $deployedHash = readDeployedHash($config);
+
+    if ($deployedHash eq $HEADHASH) {
+        print "Current version already deployed ($HEADHASH)\n";
+        exit 0;
+    }
+
+    print "Publishing $HEADHASH to $HOSTNAME\n";
+
+    my $fileList = generateFileList($config);
+
+    my ($filesUpdated, $filesSkipped) = publishFiles($config, $fileList);
+
+    print "Updated $filesUpdated files, skipped $filesSkipped as already up-to-date\n";
+
+    writeDeployedHashFile($config);
+
+    exit 0;
+    
+}
+
+sub writeDeployedHashFile {
+    my $config = shift;
+
+    my $sentryFile = _getValueForHostOrDefault($config, 'sentryFile', $HOSTNAME);
+
+    system("echo '$HEADHASH' > $sentryFile");
+}
+
+sub readDeployedHash {
+    my $config = shift;
+
+    my $destinationDir = _getValueForHostOrDefault($config, 'destinationDir', $HOSTNAME);
+    my $sentryFile = _getValueForHostOrDefault($config, 'sentryFile', $HOSTNAME);
+
+    local $\ = undef;
+    # if we can't read it, return a 0 hash.  that will force an update.
+    open(my $FH, '<', $sentryFile) or do {
+        warn "Couldn't read sentry file, forcing an update\n";
+        return 0;
+    };
+    my $hash = <$FH>;
+    chomp $hash;
+    print "Detected installed version '$hash'\n";
+    return $hash;
+}
+
+sub _getValueForHostOrDefault {
+    my ($config, $key, $host) = @_;
+
+    if (exists $config->{$host}->{$key}) {
+        return $config->{$host}->{$key};
+    }
+    return $config->{$key};
+}
+
+sub readConfig {
+    my $file = shift;
+
+    my $config = {};
+    my $rawkeys = {};
+    Config::Simple->import_from($file, $rawkeys);
+#    print "Config: " . Data::Dumper::Dumper($rawkeys) . "\n";
+
+    foreach my $key ( sort keys %{$rawkeys} ) {
+#        print "processing key $key\n";
+        my $parts = [ split(/\./, $key) ];
+        #print "FOO: " . Data::Dumper::Dumper($parts) . "\n";
+        my $end = pop @{$parts};
+        my $current = $config;
+        foreach my $part ( @{$parts} ) {
+            # default things go in the top level
+            next if ($part eq 'default');
+            if (exists $current->{$part}) {
+                $current = $current->{$part};
+                next;
+            }
+            $current->{$part} = {};
+            $current = $current->{$part};
+        }
+        # now current is pointing to the hash the actual value will go in
+        if (exists $current->{$end}) {
+            warn "Key '$key' defined multiple times, overwriting\n";
+        }
+        $current->{$end} = $rawkeys->{$key};
+    }
+    return $config;
+}
+
+
+sub generateFileList {
+    my $config = shift;
+
+    my $source = _getValueForHostOrDefault($config, 'sourceDir', $HOSTNAME);
+    my $destination = _getValueForHostOrDefault($config, 'destinationDir', $HOSTNAME);
+
+    print "Generating file list from '$source' to '$destination'\n";
+
+    my $filesToPublish = {};
+
+    my $wanted = sub {
+        # skip all directories, we will create them as-needed
+        return if ( -d $_ );
+
+        # skip based on ignorePattern in config file
+        foreach my $pattern ( values %{_getValueForHostOrDefault($config, 'ignorePattern', $HOSTNAME)} ) {
+            if ( $_ =~ m/$pattern/ ) {
+                #print "Skipping '$_' because it matches pattern '$pattern'\n";
+                return;
+            }
+        }
+
+        my $relPath = $_;
+        $relPath =~ s:^$source/default/::;
+        $relPath =~ s:^$source/$HOSTNAME/::;
+
+        if ( _getValueForHostOrDefault($config, 'debug', $HOSTNAME) ) {
+            if ( exists $filesToPublish->{$relPath} ) {
+                print "Overriding file '$relPath' with '$_'\n";
+            } else {
+                print "Will publish $relPath from '$_'\n";
+            }
+        }
+
+        $filesToPublish->{$relPath} = $_;
+    };
+
+    find({
+        'wanted' => $wanted, 
+        'follow' => 1,
+        'no_chdir' => 1,
+    }, "$source/default", "$source/$HOSTNAME");
+
+#    find({
+#        'wanted' => $wanted, 
+#        'follow' => 1,
+#        'no_chdir' => 1,
+#    }, "$source/$HOSTNAME");
+    #print "Files to publish: " . Data::Dumper::Dumper($filesToPublish) . "\n";
+
+    return $filesToPublish;
+}
+
+# TODO: handle file permissions?
+sub publishFiles {
+    my ($config, $fileList) = @_;
+
+    my $source = _getValueForHostOrDefault($config, 'sourceDir', $HOSTNAME);
+    my $destination = _getValueForHostOrDefault($config, 'destinationDir', $HOSTNAME);
+    my $useSymlinks = _getValueForHostOrDefault($config, 'useSymlinks', $HOSTNAME);
+    my $debug = _getValueForHostOrDefault($config, 'debug', $HOSTNAME);
+
+    my $count = 0;
+    my $skipped = 0;
+    foreach my $file ( sort keys %{$fileList} ) {
+    
+        my $sourceFile = $fileList->{$file};
+        my $destinationFile = "$destination/$file";
+        #print "Publishing file $sourceFile to $destinationFile\n";
+        # first ensure the directory exists
+        my $dirname = dirname($destinationFile);
+        if ( ! -d $dirname ) {
+            make_path($dirname);
+        }
+
+        # now see if the file exists and is already hard-linked
+        if ( -f $destinationFile && ! -l $destinationFile ) {
+            if ( ! $useSymlinks ) {
+                my (undef, $destinationInode, undef, undef, undef, undef, undef, undef,
+                    undef, undef, undef, undef, undef) = stat $destinationFile;
+                my (undef, $sourceInode, undef, undef, undef, undef, undef, undef,
+                    undef, undef, undef, undef, undef) = stat $sourceFile;
+                if ( $sourceInode == $destinationInode ) {
+#                print "Skipping $destinationFile, already hardlinked\n";
+                    ++$skipped;
+                    next;
+                }
+                print "Source: $sourceInode not equal to destination: $destinationInode\n";
+            }
+
+            my $date = time;
+            print "Destination file '$destinationFile' exists, backing up\n";
+            move($destinationFile, "$destinationFile.bak.$date");
+        }
+
+        if ( -l $destinationFile ) {
+            my $linkDest = readlink($destinationFile);
+
+            if ( $debug ) {
+                print "Destination file is symlink, points to '$linkDest', should be '$sourceFile'\n";
+            }
+
+            # TODO: handle relative links?  for now, assume they are all
+            # absolute
+            if ( $linkDest !~ m:^/: ) {
+                warn "Relative link detected, link will be overwritten\n";
+            }
+
+            if ( ! $useSymlinks ) {
+                # back up the symlink
+                my $date = time;
+                move($destinationFile, "$destinationFile.bak.$date");
+            } else {
+                if ($linkDest eq $sourceFile) {
+                    if ( $debug ) {
+                        print "Existing link is up-to-date, skipping\n";
+                    }
+                    ++$skipped;
+                    next;
+                }
+                # link exists but points to wrong thing
+                my $date = time;
+                move($destinationFile, "$destinationFile.bak.$date");
+            }
+        }
+
+        if ( $useSymlinks ) {
+            symlink $sourceFile, $destinationFile or do {
+                warn "Unable to symlink '$sourceFile' to '$destinationFile': $!\n";
+                next;
+            };
+            ++$count;
+            next;
+        }
+
+        link $sourceFile, $destinationFile or do {
+            warn "Unable to link '$sourceFile' to '$destinationFile': $!\n";
+            next;
+        };
+        ++$count;
+    }
+    return ($count, $skipped);
+}
+
+
