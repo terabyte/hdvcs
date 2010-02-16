@@ -1,0 +1,10 @@
+To install:
+
+git init githome
+cd githome
+mkdir default
+# setup your home directory now, check in whatever you want in default/
+
+# this will add hdvcs to your "bin/publish" directory
+git submodule add git://github.com/terabyte/hdvcs.git default/bin/publish 
+
