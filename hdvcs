@@ -12,21 +12,32 @@
 use strict;
 use warnings;
 
-use File::Basename;
-use File::Copy;
-use File::Path qw(make_path);
 use Config::Simple;
 use Data::Dumper;
+use File::Basename;
+use File::Copy;
 use File::Find;
+use File::Path qw(make_path);
+use Getopt::Long;
 
 my $CONFIG_FILE = "hdvcs.conf";
 my $HOSTNAME = `hostname`;
 chomp $HOSTNAME;
 my $HEADHASH = (split(/ /, `git log -1 --oneline`))[0];
+
 MAIN: {
 
-    my $configFile = $ENV{'HDVCS_CONFIG_FILE'};
+    my $configFile;
+    my $force;
+
+    my $status = GetOptions(
+        'force' => \$force,
+        'configFile=s' => \$configFile,
+    );
+
+    $configFile ||= $ENV{'HDVCS_CONFIG_FILE'};
     $configFile ||= $CONFIG_FILE;
+    print "Reading config file '$configFile'\n";
     my $config = readConfig($configFile);
 #    print "Read config: " . Data::Dumper::Dumper($config) . "\n";
 
@@ -34,7 +45,8 @@ MAIN: {
 
     if ($deployedHash eq $HEADHASH) {
         print "Current version already deployed ($HEADHASH)\n";
-        exit 0;
+        exit 0 if ( ! $force );
+        print "Deploying anyways because of --force\n";
     }
 
     print "Publishing $HEADHASH to $HOSTNAME\n";
