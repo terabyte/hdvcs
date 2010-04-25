@@ -22,6 +22,7 @@ use Getopt::Long;
 
 my $CONFIG_FILE = "hdvcs.conf";
 my $HOSTNAME = `hostname`;
+$HOSTNAME =~ s/\./_/g;
 chomp $HOSTNAME;
 my $HEADHASH = (split(/ /, `git log -1 --oneline`))[0];
 
@@ -29,9 +30,11 @@ MAIN: {
 
     my $configFile;
     my $force;
+    my $debug;
 
     my $status = GetOptions(
         'force' => \$force,
+        'debug' => \$debug,
         'configFile=s' => \$configFile,
     );
 
@@ -40,6 +43,13 @@ MAIN: {
     print "Reading config file '$configFile'\n";
     my $config = readConfig($configFile);
 #    print "Read config: " . Data::Dumper::Dumper($config) . "\n";
+
+    # override debug
+    if ($debug) {
+        print "Overriding debug = true\n";
+        $config->{'_override'}->{'debug'} = 'true';
+    }
+        
 
     my $deployedHash = readDeployedHash($config);
 
@@ -92,9 +102,15 @@ sub readDeployedHash {
 sub _getValueForHostOrDefault {
     my ($config, $key, $host) = @_;
 
+    # let '_override' override both defaults and per-host settings
+    if (exists $config->{'_override'}->{$key}) {
+        return $config->{$key};
+    }
+    # next look for host specific settings
     if (exists $config->{$host}->{$key}) {
         return $config->{$host}->{$key};
     }
+    # next fall back to default
     return $config->{$key};
 }
 
@@ -135,45 +151,61 @@ sub readConfig {
 sub generateFileList {
     my $config = shift;
 
+    my $packageList = _getValueForHostOrDefault($config, 'packageList', $HOSTNAME);
     my $source = _getValueForHostOrDefault($config, 'sourceDir', $HOSTNAME);
     my $destination = _getValueForHostOrDefault($config, 'destinationDir', $HOSTNAME);
 
+    if (! (ref($packageList) eq 'ARRAY')) {
+        # not a list, could be a scalar?
+        if ( ! $packageList ) {
+            # if undef, set to default.
+            $packageList = ["default"];
+        } else {
+            # scalar which isn't undef, probably the name of a single package
+            $packageList = [$packageList];
+        }
+    }
+
     print "Generating file list from '$source' to '$destination'\n";
+    _printPackageList($packageList);
 
     my $filesToPublish = {};
 
-    my $wanted = sub {
-        # skip all directories, we will create them as-needed
-        return if ( -d $_ );
+    foreach my $package ( @{$packageList} ) {
+        print "Processing package '$package'\n";
 
-        # skip based on ignorePattern in config file
-        foreach my $pattern ( values %{_getValueForHostOrDefault($config, 'ignorePattern', $HOSTNAME)} ) {
-            if ( $_ =~ m/$pattern/ ) {
-                #print "Skipping '$_' because it matches pattern '$pattern'\n";
-                return;
+        my $wanted = sub {
+            # skip all directories, we will create them as-needed
+            return if ( -d $_ );
+
+            # skip based on ignorePattern in config file
+            foreach my $pattern ( values %{_getValueForHostOrDefault($config, 'ignorePattern', $HOSTNAME)} ) {
+                if ( $_ =~ m/$pattern/ ) {
+                    #print "Skipping '$_' because it matches pattern '$pattern'\n";
+                    return;
+                }
             }
-        }
 
-        my $relPath = $_;
-        $relPath =~ s:^$source/default/::;
-        $relPath =~ s:^$source/$HOSTNAME/::;
+            my $relPath = $_;
+            $relPath =~ s:^$source/$package/::;
 
-        if ( _getValueForHostOrDefault($config, 'debug', $HOSTNAME) ) {
-            if ( exists $filesToPublish->{$relPath} ) {
-                print "Overriding file '$relPath' with '$_'\n";
-            } else {
-                print "Will publish $relPath from '$_'\n";
+            if ( _getValueForHostOrDefault($config, 'debug', $HOSTNAME) ) {
+                if ( exists $filesToPublish->{$relPath} ) {
+                    print "Overriding file '$relPath' with '$_'\n";
+                } else {
+                    print "Will publish $relPath from '$_'\n";
+                }
             }
-        }
 
-        $filesToPublish->{$relPath} = $_;
-    };
+            $filesToPublish->{$relPath} = $_;
+        };
 
-    find({
-        'wanted' => $wanted, 
-        'follow' => 1,
-        'no_chdir' => 1,
-    }, "$source/default", "$source/$HOSTNAME");
+        find({
+            'wanted' => $wanted, 
+            'follow' => 1,
+            'no_chdir' => 1,
+        }, "$source/$package");
+    }
 
 #    find({
 #        'wanted' => $wanted, 
@@ -183,6 +215,13 @@ sub generateFileList {
     #print "Files to publish: " . Data::Dumper::Dumper($filesToPublish) . "\n";
 
     return $filesToPublish;
+}
+
+sub _printPackageList {
+    my $packageList = shift;
+
+    my $pkgListTxt = join(", ", @{$packageList});
+    print "Package List: $pkgListTxt\n";
 }
 
 # TODO: handle file permissions?
