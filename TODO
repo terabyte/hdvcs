@@ -1,7 +1,11 @@
 
-add support for "packages" which can also be overridden (instead of host name)
-
 add support for overriding permissions (since git doesn't version-control
 perms and ssh key files need to be chmod 600, for example).
+
+add functionality which kills dead symlinks when files get renamed, moved, or
+deleted instead of leaving them dangling.  How should this be done?
+
+  look in destination directory for links pointing to source directory and also
+  whose destination file doesn't exist...that should do it...
 
 
