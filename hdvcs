@@ -67,6 +67,9 @@ MAIN: {
 
     print "Updated $filesUpdated files, skipped $filesSkipped as already up-to-date\n";
 
+    # set permissions to ensure they are right.
+    setPermissions($config);
+
     writeDeployedHashFile($config);
 
     exit 0;
@@ -98,6 +101,50 @@ sub readDeployedHash {
     print "Detected installed version '$hash'\n";
     return $hash;
 }
+
+sub setPermissions {
+    my $config = shift;
+
+    my $permHash = _getValueForHostOrDefault($config, 'permissions', $HOSTNAME);
+
+    # if no perms to apply, return
+    return if (!$permHash or (! scalar %{$permHash}));
+
+    print "Applying Permissions...\n";
+
+    foreach my $permission ( sort keys %{$permHash} ) {
+        print "Applying '$permission'\n";
+        my $pattern = $permHash->{$permission}->{'pattern'};
+        my $mode = $permHash->{$permission}->{'mode'};
+        my $basedir = _getValueForHostOrDefault($config, 'sourceDir', $HOSTNAME);
+        my $files = _getFilesForPattern($basedir, $pattern);
+        print "Chmod $mode for files " . Dumper($files) . "\n";
+        chmod oct($mode), @{$files};
+    }
+}
+
+sub _getFilesForPattern {
+    my ($basedir, $pattern) = @_;
+
+    print "Getting files under $basedir that match pattern '$pattern'\n";
+
+    my $files = [];
+    my $wanted = sub {
+#        print "Testing: '$_'\n";
+        if ( $_ =~ m/$pattern/ ) {
+            push @{$files}, $_;
+        }
+    };
+
+    find({
+            'wanted' => $wanted,
+            'no_chdir' => 1,
+        },
+        $basedir,
+    );
+    return $files;
+}
+
 
 sub _getValueForHostOrDefault {
     my ($config, $key, $host) = @_;
