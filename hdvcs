@@ -12,6 +12,7 @@
 use strict;
 use warnings;
 
+# to get this, apt-get install libconfig-simple-perl
 use Config::Simple;
 use Data::Dumper;
 use File::Basename;
